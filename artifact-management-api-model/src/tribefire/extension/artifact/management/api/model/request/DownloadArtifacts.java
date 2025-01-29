@@ -42,6 +42,7 @@ public interface DownloadArtifacts extends ArtifactManagementRequest {
 	String scopes = "scopes";
 	String includeOptional = "includeOptional";
 	String licenseInfo = "licenseInfo";
+	String parts = "parts";
 
 	@Alias("p")
 	@Description("The path of the root folder where the downloaded artifacts should be placed.")
@@ -75,6 +76,10 @@ public interface DownloadArtifacts extends ArtifactManagementRequest {
 	@Mandatory
 	List<String> getArtifacts();
 	void setArtifacts(List<String> artifacts);
+	
+	@Description("The parts to be downloaded if available. If the list is empty all parts are downloaded.")
+	List<String> getParts();
+	void setParts(List<String> parts);
 	
 	@Override
 	EvalContext<Neutral> eval(Evaluator<ServiceRequest> evaluator);

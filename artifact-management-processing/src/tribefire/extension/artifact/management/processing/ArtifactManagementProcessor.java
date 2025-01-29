@@ -22,20 +22,19 @@ import static com.braintribe.console.ConsoleOutputs.text;
 import static com.braintribe.console.ConsoleOutputs.yellow;
 
 import java.io.File;
-import java.io.FileNotFoundException;
 import java.io.FileOutputStream;
-import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
-import java.nio.file.Files;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
-import java.util.LinkedHashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.Predicate;
 import java.util.stream.Collectors;
 
 import org.w3c.dom.Document;
@@ -50,7 +49,6 @@ import com.braintribe.common.attribute.common.CallerEnvironment;
 import com.braintribe.common.lcd.Pair;
 import com.braintribe.console.ConsoleOutputs;
 import com.braintribe.console.output.ConfigurableConsoleOutputContainer;
-import com.braintribe.console.output.ConsoleOutput;
 import com.braintribe.devrock.env.api.DevEnvironment;
 import com.braintribe.devrock.mc.api.commons.ArtifactAddressBuilder;
 import com.braintribe.devrock.mc.api.declared.DeclaredGroupExtractionContext;
@@ -76,7 +74,6 @@ import com.braintribe.devrock.mc.core.wirings.transitive.TransitiveResolverWireM
 import com.braintribe.devrock.mc.core.wirings.transitive.contract.TransitiveResolverContract;
 import com.braintribe.devrock.mc.core.wirings.venv.contract.VirtualEnvironmentContract;
 import com.braintribe.devrock.model.mc.core.event.OnPartDownloadProcessed;
-import com.braintribe.devrock.model.mc.core.event.OnPartDownloaded;
 import com.braintribe.exception.Exceptions;
 import com.braintribe.gm.model.reason.Maybe;
 import com.braintribe.gm.model.reason.Reason;
@@ -92,7 +89,6 @@ import com.braintribe.model.artifact.consumable.Part;
 import com.braintribe.model.artifact.consumable.PartEnrichment;
 import com.braintribe.model.artifact.consumable.PartReflection;
 import com.braintribe.model.artifact.declared.DeclaredGroup;
-import com.braintribe.model.artifact.declared.License;
 import com.braintribe.model.artifact.essential.ArtifactIdentification;
 import com.braintribe.model.artifact.essential.PartIdentification;
 import com.braintribe.model.processing.service.api.OutputConfig;
@@ -250,6 +246,20 @@ public class ArtifactManagementProcessor extends AbstractDispatchingServiceProce
 				ConsoleOutputs.print(configurableSequence);
 			}
 		}
+		
+		private Predicate<String> partInclusionFilter(List<String> parts) {
+			if (parts.isEmpty())
+				return p -> true;
+				
+			Set<String> normalizedParts = new HashSet<>();
+				
+			for (String part: parts) {
+				PartIdentification partIdent = PartIdentification.parse(part);
+				normalizedParts.add(partIdent.asString());
+			}
+				
+			return p -> normalizedParts.contains(p);
+		}
 
 		private void resolveDependenciesAndParts() {
 			ConsoleOutputs.println("Resolving Artifacts");
@@ -289,6 +299,8 @@ public class ArtifactManagementProcessor extends AbstractDispatchingServiceProce
 				
 				AtomicInteger partCount = new AtomicInteger();
 				
+				Predicate<String> partInclusionFilter = partInclusionFilter(request.getParts());
+				
 				resolution.getSolutions().parallelStream().forEach(a -> {
 					List<PartReflection> partReflections = partAvailabilityReflection.getAvailablePartsOf(CompiledArtifactIdentification.from(a));
 					
@@ -301,13 +313,16 @@ public class ArtifactManagementProcessor extends AbstractDispatchingServiceProce
 							continue;
 						}
 						
+						if (!partInclusionFilter.test(PartIdentification.asString(reflection))) {
+							continue;
+						}
+						
 						PartEnrichment enrichment = PartEnrichment.T.create();
 						enrichment.setClassifier(reflection.getClassifier());
 						enrichment.setType(partType);
 						enrichment.setMandatory(true);
 						
 						parts.put(PartIdentification.asString(enrichment), enrichment);
-						
 					}
 					
 					partCount.getAndUpdate(i -> i + parts.size());
@@ -722,9 +737,9 @@ public class ArtifactManagementProcessor extends AbstractDispatchingServiceProce
 		 */
 		private void putToConsole(ConfigurableConsoleOutputContainer oc, Reason whyUnsatisfied, boolean fatal) {
 			if (fatal)
-				oc.append( ConsoleOutputs.red( whyUnsatisfied.asFormattedText() +"\n"));
+				oc.append( ConsoleOutputs.red( whyUnsatisfied.stringify() +"\n"));
 			else
-				oc.append( ConsoleOutputs.yellow( whyUnsatisfied.asFormattedText() +"\n"));
+				oc.append( ConsoleOutputs.yellow( whyUnsatisfied.stringify() +"\n"));
 		}
 		
 		/**
@@ -734,7 +749,7 @@ public class ArtifactManagementProcessor extends AbstractDispatchingServiceProce
 		 */
 		private Maybe<RepositoryRepairData> repairLocalRepository(ServiceRequestContext context, RepairLocalRepository request) {
 			try (WireContext<ArtifactDataResolverContract> wireContext = openWireContext(context)) {
-				String localRepositoryPath = wireContext.contract().repositoryReflection().getRepositoryConfiguration().getLocalRepositoryPath();
+				String localRepositoryPath = wireContext.contract().repositoryReflection().getRepositoryConfiguration().cachePath();
 				FilesystemLockPurger purger = new FilesystemLockPurger();
 				purger.setRepositoryRoot(localRepositoryPath);
 				Maybe<Pair<Integer,List<File>>> retval = purger.purgeFilesytemLockFiles();
