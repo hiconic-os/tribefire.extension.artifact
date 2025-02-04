@@ -204,10 +204,13 @@ public class ArtifactManagementProcessor extends AbstractDispatchingServiceProce
 			List<Part> copyFailedParts = new ArrayList<>();
 			int i = 0;
 			ConfigurableConsoleOutputContainer configurableSequence = null;
-			
+			Predicate<String> partInclusionFilter = partInclusionFilter(request.getParts());
 			for (AnalysisArtifact artifact: resolution.getSolutions()) {
 				for (Part part: artifact.getParts().values()) {
 					if (part.hasFailed()) 
+						continue;
+					
+					if (!partInclusionFilter.test(PartIdentification.asString(part)))
 						continue;
 
 					File targetFile = ArtifactAddressBuilder.build().root(targetPath.getAbsolutePath()) //
@@ -231,13 +234,14 @@ public class ArtifactManagementProcessor extends AbstractDispatchingServiceProce
 					configurableSequence = ConsoleOutputs.configurableSequence();
 					configurableSequence.resetPosition(true);
 					
-					int percent = i * 100 / partCount;
-					
-					String progressMessage = String.format("Copied %d%% (%d/%d) of artifact parts to target path " + targetPath.getAbsolutePath(), percent, i, partCount);
-					configurableSequence.append(progressMessage);
-					configurableSequence.append("\n");
-					
-					ConsoleOutputs.print(configurableSequence);
+					if (partCount != 0) {
+						int percent = partCount != 0? i * 100 / partCount: 0;
+						
+						String progressMessage = String.format("Copied %d%% (%d/%d) of artifact parts to target path " + targetPath.getAbsolutePath(), percent, i, partCount);
+						configurableSequence.append(progressMessage);
+						configurableSequence.append("\n");
+						ConsoleOutputs.print(configurableSequence);
+					}
 				}
 			}
 			
@@ -302,7 +306,14 @@ public class ArtifactManagementProcessor extends AbstractDispatchingServiceProce
 				Predicate<String> partInclusionFilter = partInclusionFilter(request.getParts());
 				
 				resolution.getSolutions().parallelStream().forEach(a -> {
-					List<PartReflection> partReflections = partAvailabilityReflection.getAvailablePartsOf(CompiledArtifactIdentification.from(a));
+					var partReflectionsMaybe = partAvailabilityReflection.getAvailablePartsOfReasoned(CompiledArtifactIdentification.from(a));
+					
+					if (partReflectionsMaybe.isUnsatisfied()) {
+						// TODO: what to do here really? 
+						return;
+					}
+					
+					var partReflections = partReflectionsMaybe.get();
 					
 					Map<String, PartEnrichment> parts = new HashMap<>();
 					
