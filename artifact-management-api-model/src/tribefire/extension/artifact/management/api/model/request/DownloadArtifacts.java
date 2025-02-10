@@ -56,7 +56,6 @@ public interface DownloadArtifacts extends ArtifactManagementRequest {
 	boolean getTransitive();
 	void setTransitive(boolean transitive);
 	
-	@Alias("t")
 	@Description("If true the local respository or cache will not be used and artifacts will always be freshly downloaded.")
 	boolean getNoCache();
 	void setNoCache(boolean noCache);
