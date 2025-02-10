@@ -16,10 +16,13 @@
 package tribefire.extension.artifact.management.processing;
 
 import static com.braintribe.console.ConsoleOutputs.brightBlack;
+import static com.braintribe.console.ConsoleOutputs.brightGreen;
+import static com.braintribe.console.ConsoleOutputs.brightRed;
 import static com.braintribe.console.ConsoleOutputs.println;
 import static com.braintribe.console.ConsoleOutputs.sequence;
 import static com.braintribe.console.ConsoleOutputs.text;
 import static com.braintribe.console.ConsoleOutputs.yellow;
+import static com.braintribe.devrock.mc.core.commons.McOutputs.artifactPartIdentification;
 
 import java.io.File;
 import java.io.FileOutputStream;
@@ -67,6 +70,7 @@ import com.braintribe.devrock.mc.core.commons.DownloadMonitor;
 import com.braintribe.devrock.mc.core.declared.group.DeclaredGroupExtractor;
 import com.braintribe.devrock.mc.core.wirings.backend.contract.ArtifactDataBackendContract;
 import com.braintribe.devrock.mc.core.wirings.configuration.contract.DevelopmentEnvironmentContract;
+import com.braintribe.devrock.mc.core.wirings.configuration.contract.RepositoryConfigurationContract;
 import com.braintribe.devrock.mc.core.wirings.env.configuration.EnvironmentSensitiveConfigurationWireModule;
 import com.braintribe.devrock.mc.core.wirings.resolver.ArtifactDataResolverModule;
 import com.braintribe.devrock.mc.core.wirings.resolver.contract.ArtifactDataResolverContract;
@@ -74,13 +78,16 @@ import com.braintribe.devrock.mc.core.wirings.transitive.TransitiveResolverWireM
 import com.braintribe.devrock.mc.core.wirings.transitive.contract.TransitiveResolverContract;
 import com.braintribe.devrock.mc.core.wirings.venv.contract.VirtualEnvironmentContract;
 import com.braintribe.devrock.model.mc.core.event.OnPartDownloadProcessed;
+import com.braintribe.devrock.model.mc.reason.IncompleteResolution;
 import com.braintribe.exception.Exceptions;
 import com.braintribe.gm.model.reason.Maybe;
 import com.braintribe.gm.model.reason.Reason;
+import com.braintribe.gm.model.reason.ReasonException;
 import com.braintribe.gm.model.reason.Reasons;
 import com.braintribe.gm.model.reason.essential.InternalError;
 import com.braintribe.gm.model.reason.essential.NotFound;
 import com.braintribe.gm.model.reason.essential.ParseError;
+import com.braintribe.gm.reason.TemplateReasons;
 import com.braintribe.model.artifact.analysis.AnalysisArtifact;
 import com.braintribe.model.artifact.analysis.AnalysisArtifactResolution;
 import com.braintribe.model.artifact.compiled.CompiledArtifactIdentification;
@@ -91,6 +98,7 @@ import com.braintribe.model.artifact.consumable.PartReflection;
 import com.braintribe.model.artifact.declared.DeclaredGroup;
 import com.braintribe.model.artifact.essential.ArtifactIdentification;
 import com.braintribe.model.artifact.essential.PartIdentification;
+import com.braintribe.model.artifact.essential.VersionedArtifactIdentification;
 import com.braintribe.model.processing.service.api.OutputConfig;
 import com.braintribe.model.processing.service.api.OutputConfigAspect;
 import com.braintribe.model.processing.service.api.ServiceRequestContext;
@@ -106,6 +114,7 @@ import com.braintribe.utils.FileTools;
 import com.braintribe.utils.IOTools;
 import com.braintribe.utils.StringTools;
 import com.braintribe.utils.collection.impl.AttributeContexts;
+import com.braintribe.utils.lcd.LazyInitialized;
 import com.braintribe.utils.paths.UniversalPath;
 import com.braintribe.utils.xml.parser.DomParser;
 import com.braintribe.utils.xml.parser.DomParserException;
@@ -141,7 +150,7 @@ public class ArtifactManagementProcessor extends AbstractDispatchingServiceProce
 	@Override
 	protected void configureDispatching(DispatchConfiguration<ArtifactManagementRequest, Object> dispatching) {
 		dispatching.register(UploadArtifacts.T, this::uploadArtifacts);
-		dispatching.register(DownloadArtifacts.T, this::downloadArtifacts);
+		dispatching.registerReasoned(DownloadArtifacts.T, this::downloadArtifacts);
 		dispatching.register(GetArtifactVersions.T, this::getArtifactVersions);
 		dispatching.register(GetArtifactsVersions.T, this::getArtifactsVersions);
 		dispatching.register(GetGroupAnalysisData.T, this::getGroupAnalysisData);
@@ -167,88 +176,163 @@ public class ArtifactManagementProcessor extends AbstractDispatchingServiceProce
 		private ServiceRequestContext context;
 		private AnalysisArtifactResolution resolution;
 		private File targetPath;
+		private LazyInitialized<Reason> processError = new LazyInitialized<>(this::generateUmbrellaReason);
+		private boolean dynamicOutput;
 		
-		public StatefulDownloadArtifacts(ServiceRequestContext context, DownloadArtifacts request) {
+		public StatefulDownloadArtifacts(ServiceRequestContext context, DownloadArtifacts request, boolean dynamicOutput) {
 			super();
 			this.context = context;
 			this.request = request;
+			this.dynamicOutput = dynamicOutput;
+		}
+		
+		private Reason generateUmbrellaReason() {
+			var artifacts = terminals.stream().map(t -> 
+				(ArtifactIdentification)VersionedArtifactIdentification.create(t.getGroupId(), t.getArtifactId(), t.getVersion().asString()))//
+				.toList();
+				
+			return TemplateReasons.build(IncompleteResolution.T).assign(IncompleteResolution::setTerminals, artifacts).toReason();
 		}
 		
 		private WireContext<TransitiveResolverContract> openDownloadWireContext() {
 			File devEnvRoot = context.findAttribute(DevEnvironment.class).map(DevEnvironment::getRootPath).orElse(null);
 			
-			return Wire.contextBuilder(TransitiveResolverWireModule.INSTANCE, EnvironmentSensitiveConfigurationWireModule.INSTANCE) //
-					.bindContract(DevelopmentEnvironmentContract.class, () -> devEnvRoot) //
-					.bindContract(VirtualEnvironmentContract.class, () -> virtualEnvironment) //
-					.build();
+			if (request.getNoCache()) {
+				try (var context = Wire.contextBuilder(TransitiveResolverWireModule.INSTANCE, EnvironmentSensitiveConfigurationWireModule.INSTANCE) //
+						.bindContract(DevelopmentEnvironmentContract.class, () -> devEnvRoot) //
+						.bindContract(VirtualEnvironmentContract.class, () -> virtualEnvironment) //
+						.build()) {
+
+					var repoConfig = context.contract().dataResolverContract().repositoryReflection().getRepositoryConfiguration();
+					
+					repoConfig.getRepositories().forEach(r -> r.setCachable(false));
+					
+					return Wire.contextBuilder(TransitiveResolverWireModule.INSTANCE) //
+							.bindContract(RepositoryConfigurationContract.class, () -> Maybe.complete(repoConfig)) //
+							.build();
+				}
+			}
+			else {
+				return Wire.contextBuilder(TransitiveResolverWireModule.INSTANCE, EnvironmentSensitiveConfigurationWireModule.INSTANCE) //
+						.bindContract(DevelopmentEnvironmentContract.class, () -> devEnvRoot) //
+						.bindContract(VirtualEnvironmentContract.class, () -> virtualEnvironment) //
+						.build();
+			}
 		}
 		
-		public void process() {
-			validate();
+		public Maybe<Neutral> process() {
+			Reason error = validate();
+			
+			if (error != null)
+				return error.asMaybe();
 			
 			try (WireContext<TransitiveResolverContract> wireContext = openDownloadWireContext()) {
 				contract = wireContext.contract();
 				
+				Reason resolutionError = resolveDependenciesAndParts();
 				
-				resolveDependenciesAndParts();
+				if (resolutionError != null)
+					return resolutionError.asMaybe();
+				
 				copyParts();
 			}
+			
+			if (processError.isInitialized())
+				return processError.get().asMaybe();
+			
+			return Maybe.complete(Neutral.NEUTRAL);
 		}
 		
-		private void validate() {
+		private Reason validate() {
 			targetPath = CallerEnvironment.resolveRelativePath(request.getPath());
 			terminals = request.getArtifacts().stream().map(CompiledDependencyIdentification::parse).collect(Collectors.toList());
+			return null;
 		}
 		
 		private void copyParts() {
-			List<Part> copyFailedParts = new ArrayList<>();
 			int i = 0;
-			ConfigurableConsoleOutputContainer configurableSequence = null;
+			int failedPartCount = 0;
 			Predicate<String> partInclusionFilter = partInclusionFilter(request.getParts());
 			for (AnalysisArtifact artifact: resolution.getSolutions()) {
 				for (Part part: artifact.getParts().values()) {
-					if (part.hasFailed()) 
-						continue;
-					
 					if (!partInclusionFilter.test(PartIdentification.asString(part)))
 						continue;
 
 					File targetFile = ArtifactAddressBuilder.build().root(targetPath.getAbsolutePath()) //
-						.versionedArtifact(artifact) //
-						.part(part) //
-						.toPath() //
-						.toFile();
-						
-					Resource partResource = part.getResource();
+							.versionedArtifact(artifact) //
+							.part(part) //
+							.toPath() //
+							.toFile();
+
+					Reason error = null;
 					
-					try {
-						targetFile.getParentFile().mkdirs();
-						try (InputStream in = partResource.openStream(); OutputStream out = new FileOutputStream(targetFile)) {
-							IOTools.transferBytes(in, out);
+					error_block: {
+						if (part.hasFailed()) {
+							error = part.getFailure();
+							break error_block;
 						}
-						i++;
-					} catch (Exception e1) {
-						copyFailedParts.add(part);
-					}
+	
+						File downloadFile = new File(targetFile.getAbsolutePath() + ".download");
 					
-					configurableSequence = ConsoleOutputs.configurableSequence();
-					configurableSequence.resetPosition(true);
-					
-					if (partCount != 0) {
-						int percent = partCount != 0? i * 100 / partCount: 0;
+						try {
+							targetFile.getParentFile().mkdirs();
+						}
+						catch (Exception e) {
+							error = InternalError.from(e, "Could not create target directory: " + targetFile.getParentFile().getAbsolutePath());
+							break error_block;
+						}
 						
-						String progressMessage = String.format("Copied %d%% (%d/%d) of artifact parts to target path " + targetPath.getAbsolutePath(), percent, i, partCount);
-						configurableSequence.append(progressMessage);
-						configurableSequence.append("\n");
-						ConsoleOutputs.print(configurableSequence);
+						try {
+							if (targetFile.exists())
+								targetFile.delete();
+						}
+						catch (Exception e) {
+							error = InternalError.from(e, "Could not delete existing file to allow fresh download: " + targetFile.getAbsolutePath());
+							break error_block;
+						}
+	
+						Resource partResource = part.getResource();
+						
+						try {
+							try (InputStream in = partResource.openStream(); OutputStream out = new FileOutputStream(downloadFile)) {
+								IOTools.transferBytes(in, out);
+							}
+							
+							downloadFile.renameTo(targetFile);
+							downloadFile.delete();
+							i++;
+						}
+						catch (ReasonException re) {
+							error = re.getReason();
+							break error_block;
+						}
+						catch (Exception e) {
+							error = InternalError.from(e, "Could not create target directory: " + targetFile.getParentFile().getAbsolutePath());
+							break error_block;
+						}
 					}
+					
+					if (error != null) {
+						failedPartCount++;
+						println(sequence(
+								brightRed("Download failed for artifact part " + (i + 1) + "/" + partCount + " "),
+								artifactPartIdentification(artifact, part),
+								text(": "),
+								text(error.stringify(true))
+						));
+					}
+					else {
+						println(sequence( //
+							brightGreen("Downloaded artifact part " + (i + 1) + "/" + partCount + " to: "), 
+							text(targetFile.getAbsolutePath()
+						)));
+					}
+					
 				}
 			}
 			
-			if (configurableSequence != null) {
-				configurableSequence.resetPosition(false);
-				ConsoleOutputs.print(configurableSequence);
-			}
+			if (failedPartCount > 0)
+				processError.get().getReasons().add(Reason.create(failedPartCount + " part(s) could not be downloaded"));
 		}
 		
 		private Predicate<String> partInclusionFilter(List<String> parts) {
@@ -265,8 +349,9 @@ public class ArtifactManagementProcessor extends AbstractDispatchingServiceProce
 			return p -> normalizedParts.contains(p);
 		}
 
-		private void resolveDependenciesAndParts() {
-			ConsoleOutputs.println("Resolving Artifacts");
+		private Reason resolveDependenciesAndParts() {
+			ConsoleOutputs.println("Downloading Artifacts");
+			ConsoleOutputs.println();
 			EventHub eventHub = new EventHub();
 			
 			AttributeContext attributeContext = AttributeContexts.derivePeek() //
@@ -275,7 +360,7 @@ public class ArtifactManagementProcessor extends AbstractDispatchingServiceProce
 			
 			AttributeContexts.push(attributeContext);
 
-			try (DownloadMonitor monitor = new DownloadMonitor(eventHub, false, 0, true)) {
+			try (DownloadMonitor monitor = new DownloadMonitor(eventHub, false, 0, dynamicOutput)) {
 				monitor.addPhase(ConsoleOutputs.text("Resolving Dependencies"));
 				monitor.addPhase(ConsoleOutputs.text("Detecting Artifact Parts"));
 				monitor.addPhase(ConsoleOutputs.text("Resolving Artifact Parts"));
@@ -291,10 +376,25 @@ public class ArtifactManagementProcessor extends AbstractDispatchingServiceProce
 						.includeRelocationDependencies(transitive) //
 						.includeStandardDependencies(transitive) //
 						.dependencyFilter(new DownloadDependencyFilter(request.getScopes(), request.getIncludeOptional()))
+						.lenient(true)
 						.done(); 
 				
 				resolution = contract.transitiveDependencyResolver().resolve(resolutionContext, terminals);
+				
+				ConsoleOutputs.println();
+				ConsoleOutputs.println("Resolved Dependencies:");
+				ConsoleOutputs.println();
+				
+				ArtifactTreePrinter artifactTreePrinter = new ArtifactTreePrinter();
+				artifactTreePrinter.setOutputParts(true);
+				artifactTreePrinter.setOutputLicense(request.getLicenseInfo());
+				artifactTreePrinter.printDependencyTree(resolution);
+				
+				if (resolution.hasFailed())
+					return resolution.getFailure();
+				
 				monitor.nextPhase(resolution.getSolutions().size());
+				
 				
 				// determine parts
 				PartAvailabilityReflection partAvailabilityReflection = contract.dataResolverContract().partAvailabilityReflection();
@@ -367,19 +467,14 @@ public class ArtifactManagementProcessor extends AbstractDispatchingServiceProce
 			finally {
 				AttributeContexts.pop();
 			}
-
-			ConsoleOutputs.println("Downloaded artifacts with parts");
 			
-			ArtifactTreePrinter artifactTreePrinter = new ArtifactTreePrinter();
-			artifactTreePrinter.setOutputParts(true);
-			artifactTreePrinter.setOutputLicense(request.getLicenseInfo());
-			artifactTreePrinter.printDependencyTree(resolution);
+			return null;
 		}
 	}
 	
-	private Neutral downloadArtifacts(ServiceRequestContext context, DownloadArtifacts request) {
-		new StatefulDownloadArtifacts(context, request).process(); 
-		return Neutral.NEUTRAL;
+	private Maybe<Neutral> downloadArtifacts(ServiceRequestContext context, DownloadArtifacts request) {
+		boolean dynamic = context.getAspect(OutputConfigAspect.class, OutputConfig.empty).dynamic();
+		return new StatefulDownloadArtifacts(context, request, dynamic).process(); 
 	}
 
 	

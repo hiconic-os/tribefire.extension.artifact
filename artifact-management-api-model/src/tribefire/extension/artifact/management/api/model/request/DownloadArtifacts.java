@@ -43,6 +43,7 @@ public interface DownloadArtifacts extends ArtifactManagementRequest {
 	String includeOptional = "includeOptional";
 	String licenseInfo = "licenseInfo";
 	String parts = "parts";
+	String noCache = "noCache";
 
 	@Alias("p")
 	@Description("The path of the root folder where the downloaded artifacts should be placed.")
@@ -54,6 +55,11 @@ public interface DownloadArtifacts extends ArtifactManagementRequest {
 	@Description("If true the transitive dependencies of the given artifacts will be downloaded as well.")
 	boolean getTransitive();
 	void setTransitive(boolean transitive);
+	
+	@Alias("t")
+	@Description("If true the local respository or cache will not be used and artifacts will always be freshly downloaded.")
+	boolean getNoCache();
+	void setNoCache(boolean noCache);
 	
 	@Alias("l")
 	@Description("If true and license related output will be made.")
