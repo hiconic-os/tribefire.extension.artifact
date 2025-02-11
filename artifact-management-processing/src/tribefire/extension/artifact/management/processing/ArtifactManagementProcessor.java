@@ -300,7 +300,6 @@ public class ArtifactManagementProcessor extends AbstractDispatchingServiceProce
 							
 							downloadFile.renameTo(targetFile);
 							downloadFile.delete();
-							i++;
 						}
 						catch (ReasonException re) {
 							error = re.getReason();
@@ -327,6 +326,8 @@ public class ArtifactManagementProcessor extends AbstractDispatchingServiceProce
 							text(targetFile.getAbsolutePath()
 						)));
 					}
+					
+					i++;
 					
 				}
 			}
@@ -381,17 +382,19 @@ public class ArtifactManagementProcessor extends AbstractDispatchingServiceProce
 				
 				resolution = contract.transitiveDependencyResolver().resolve(resolutionContext, terminals);
 				
-				ConsoleOutputs.println();
-				ConsoleOutputs.println("Resolved Dependencies:");
-				ConsoleOutputs.println();
 				
-				ArtifactTreePrinter artifactTreePrinter = new ArtifactTreePrinter();
-				artifactTreePrinter.setOutputParts(true);
-				artifactTreePrinter.setOutputLicense(request.getLicenseInfo());
-				artifactTreePrinter.printDependencyTree(resolution);
-				
-				if (resolution.hasFailed())
+				if (resolution.hasFailed()) {
+					ConsoleOutputs.println();
+					ConsoleOutputs.println("Incompleteley Resolved Dependencies:");
+					ConsoleOutputs.println();
+					
+					ArtifactTreePrinter artifactTreePrinter = new ArtifactTreePrinter();
+					artifactTreePrinter.setOutputParts(true);
+					artifactTreePrinter.setOutputLicense(request.getLicenseInfo());
+					artifactTreePrinter.printDependencyTree(resolution);
+
 					return resolution.getFailure();
+				}
 				
 				monitor.nextPhase(resolution.getSolutions().size());
 				
@@ -467,6 +470,15 @@ public class ArtifactManagementProcessor extends AbstractDispatchingServiceProce
 			finally {
 				AttributeContexts.pop();
 			}
+			
+			ConsoleOutputs.println();
+			ConsoleOutputs.println("Resolved Dependencies:");
+			ConsoleOutputs.println();
+			
+			ArtifactTreePrinter artifactTreePrinter = new ArtifactTreePrinter();
+			artifactTreePrinter.setOutputParts(true);
+			artifactTreePrinter.setOutputLicense(request.getLicenseInfo());
+			artifactTreePrinter.printDependencyTree(resolution);
 			
 			return null;
 		}
