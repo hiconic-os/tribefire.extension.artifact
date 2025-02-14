@@ -67,6 +67,7 @@ import com.braintribe.devrock.mc.api.resolver.PartAvailabilityReflection;
 import com.braintribe.devrock.mc.api.transitive.TransitiveResolutionContext;
 import com.braintribe.devrock.mc.core.commons.ArtifactTreePrinter;
 import com.braintribe.devrock.mc.core.commons.DownloadMonitor;
+import com.braintribe.devrock.mc.core.commons.Downloads;
 import com.braintribe.devrock.mc.core.declared.group.DeclaredGroupExtractor;
 import com.braintribe.devrock.mc.core.wirings.backend.contract.ArtifactDataBackendContract;
 import com.braintribe.devrock.mc.core.wirings.configuration.contract.DevelopmentEnvironmentContract;
@@ -266,51 +267,11 @@ public class ArtifactManagementProcessor extends AbstractDispatchingServiceProce
 
 					Reason error = null;
 					
-					error_block: {
-						if (part.hasFailed()) {
-							error = part.getFailure();
-							break error_block;
-						}
-	
-						File downloadFile = new File(targetFile.getAbsolutePath() + ".download");
-					
-						try {
-							targetFile.getParentFile().mkdirs();
-						}
-						catch (Exception e) {
-							error = InternalError.from(e, "Could not create target directory: " + targetFile.getParentFile().getAbsolutePath());
-							break error_block;
-						}
+					if (part.hasFailed())
+						error = part.getFailure();
+					else
+						error = Downloads.downloadReasoned(targetFile, part.getResource());
 						
-						try {
-							if (targetFile.exists())
-								targetFile.delete();
-						}
-						catch (Exception e) {
-							error = InternalError.from(e, "Could not delete existing file to allow fresh download: " + targetFile.getAbsolutePath());
-							break error_block;
-						}
-	
-						Resource partResource = part.getResource();
-						
-						try {
-							try (InputStream in = partResource.openStream(); OutputStream out = new FileOutputStream(downloadFile)) {
-								IOTools.transferBytes(in, out);
-							}
-							
-							downloadFile.renameTo(targetFile);
-							downloadFile.delete();
-						}
-						catch (ReasonException re) {
-							error = re.getReason();
-							break error_block;
-						}
-						catch (Exception e) {
-							error = InternalError.from(e, "Could not create target directory: " + targetFile.getParentFile().getAbsolutePath());
-							break error_block;
-						}
-					}
-					
 					if (error != null) {
 						failedPartCount++;
 						println(sequence(
