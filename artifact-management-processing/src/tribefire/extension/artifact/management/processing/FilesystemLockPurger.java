@@ -49,7 +49,6 @@ public class FilesystemLockPurger {
 	
 	/**
 	 * deletes all *.lck files in the directory structure
-	 * @param repoRoot - the main entry point (most likely a local repository)
 	 * @return - a {@link Maybe} with a {@link Pair} of the number of lock-files and their {@link File}s
 	 */
 	public Maybe<Pair<Integer, List<File>>> purgeFilesytemLockFiles() {

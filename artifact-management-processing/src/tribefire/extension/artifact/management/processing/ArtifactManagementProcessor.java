@@ -181,22 +181,27 @@ public class ArtifactManagementProcessor extends AbstractDispatchingServiceProce
 		private boolean dynamicOutput;
 		
 		public StatefulDownloadArtifacts(ServiceRequestContext context, DownloadArtifacts request, boolean dynamicOutput) {
-			super();
 			this.context = context;
 			this.request = request;
 			this.dynamicOutput = dynamicOutput;
 		}
 		
 		private Reason generateUmbrellaReason() {
-			var artifacts = terminals.stream().map(t -> 
-				(ArtifactIdentification)VersionedArtifactIdentification.create(t.getGroupId(), t.getArtifactId(), t.getVersion().asString()))//
-				.toList();
-				
+			var artifacts = terminals.stream() //
+					.map(t -> (ArtifactIdentification) VersionedArtifactIdentification.create(//
+							t.getGroupId(), //
+							t.getArtifactId(), //
+							t.getVersion().asString() //
+					)) //
+					.toList();
+
 			return TemplateReasons.build(IncompleteResolution.T).assign(IncompleteResolution::setTerminals, artifacts).toReason();
 		}
 		
 		private WireContext<TransitiveResolverContract> openDownloadWireContext() {
-			File devEnvRoot = context.findAttribute(DevEnvironment.class).map(DevEnvironment::getRootPath).orElse(null);
+			File devEnvRoot = context.findAttribute(DevEnvironment.class) //
+					.map(DevEnvironment::getRootPath) //
+					.orElse(null);
 			
 			if (request.getNoCache()) {
 				try (var context = Wire.contextBuilder(TransitiveResolverWireModule.INSTANCE, EnvironmentSensitiveConfigurationWireModule.INSTANCE) //
@@ -205,9 +210,9 @@ public class ArtifactManagementProcessor extends AbstractDispatchingServiceProce
 						.build()) {
 
 					var repoConfig = context.contract().dataResolverContract().repositoryReflection().getRepositoryConfiguration();
-					
+
 					repoConfig.getRepositories().forEach(r -> r.setCachable(false));
-					
+
 					return Wire.contextBuilder(TransitiveResolverWireModule.INSTANCE) //
 							.bindContract(RepositoryConfigurationContract.class, () -> Maybe.complete(repoConfig)) //
 							.build();
@@ -450,14 +455,6 @@ public class ArtifactManagementProcessor extends AbstractDispatchingServiceProce
 		return new StatefulDownloadArtifacts(context, request, dynamic).process(); 
 	}
 
-	
-	
-	/**
-	 * uploader 
-	 * @param context - the {@link ServiceRequestContext}
-	 * @param request - the {@link UploadArtifacts} request
-	 * @return - a {@link Neutral}, aka nothing as an object
-	 */
 	private Neutral uploadArtifacts(ServiceRequestContext context, UploadArtifacts request) {
 		File workingDirectory = CallerEnvironment.resolveRelativePath(request.getPath());
 
@@ -810,9 +807,7 @@ public class ArtifactManagementProcessor extends AbstractDispatchingServiceProce
 
 		/**
 		 * @param oc - the {@link ConfigurableConsoleOutputContainer}
-		 * @param offset - the offset 
 		 * @param whyUnsatisfied - the {@link Reason}
-		 * @param failed - true it's a major issue 
 		 */
 		private void putToConsole(ConfigurableConsoleOutputContainer oc, Reason whyUnsatisfied, boolean fatal) {
 			if (fatal)
