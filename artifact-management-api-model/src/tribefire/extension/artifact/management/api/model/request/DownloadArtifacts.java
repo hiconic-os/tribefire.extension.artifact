@@ -43,6 +43,7 @@ public interface DownloadArtifacts extends ArtifactManagementRequest {
 	String includeOptional = "includeOptional";
 	String licenseInfo = "licenseInfo";
 	String parts = "parts";
+	String mandatoryParts = "mandatoryParts";
 	String noCache = "noCache";
 
 	@Alias("p")
@@ -82,9 +83,13 @@ public interface DownloadArtifacts extends ArtifactManagementRequest {
 	List<String> getArtifacts();
 	void setArtifacts(List<String> artifacts);
 	
-	@Description("The parts to be downloaded if available. If the list is empty all parts are downloaded.")
+	@Description("The parts to be downloaded if available. If parts and mandatoryParts are empty all available parts are downloaded.")
 	List<String> getParts();
 	void setParts(List<String> parts);
+	
+	@Description("The parts to be downloaded in any case. If parts and mandatoryParts are empty all available parts are downloaded.")
+	List<String> getMandatoryParts();
+	void setMandatoryParts(List<String> mandatoryParts);
 	
 	@Override
 	EvalContext<Neutral> eval(Evaluator<ServiceRequest> evaluator);

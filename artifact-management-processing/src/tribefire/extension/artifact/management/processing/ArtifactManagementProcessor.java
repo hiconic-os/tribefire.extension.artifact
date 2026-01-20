@@ -22,12 +22,10 @@ import static com.braintribe.console.ConsoleOutputs.println;
 import static com.braintribe.console.ConsoleOutputs.sequence;
 import static com.braintribe.console.ConsoleOutputs.text;
 import static com.braintribe.console.ConsoleOutputs.yellow;
+import static com.braintribe.devrock.mc.core.commons.McOutputs.artifactIdentification;
 import static com.braintribe.devrock.mc.core.commons.McOutputs.artifactPartIdentification;
 
 import java.io.File;
-import java.io.FileOutputStream;
-import java.io.InputStream;
-import java.io.OutputStream;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
@@ -35,8 +33,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.Function;
 import java.util.function.Predicate;
 import java.util.stream.Collectors;
 
@@ -83,7 +80,6 @@ import com.braintribe.devrock.model.mc.reason.IncompleteResolution;
 import com.braintribe.exception.Exceptions;
 import com.braintribe.gm.model.reason.Maybe;
 import com.braintribe.gm.model.reason.Reason;
-import com.braintribe.gm.model.reason.ReasonException;
 import com.braintribe.gm.model.reason.Reasons;
 import com.braintribe.gm.model.reason.essential.InternalError;
 import com.braintribe.gm.model.reason.essential.NotFound;
@@ -105,17 +101,15 @@ import com.braintribe.model.processing.service.api.OutputConfigAspect;
 import com.braintribe.model.processing.service.api.ServiceRequestContext;
 import com.braintribe.model.processing.service.impl.AbstractDispatchingServiceProcessor;
 import com.braintribe.model.processing.service.impl.DispatchConfiguration;
-import com.braintribe.model.resource.Resource;
 import com.braintribe.model.service.api.result.Neutral;
 import com.braintribe.model.version.FuzzyVersion;
 import com.braintribe.model.version.HasMajorMinor;
 import com.braintribe.model.version.Version;
 import com.braintribe.utils.DOMTools;
 import com.braintribe.utils.FileTools;
-import com.braintribe.utils.IOTools;
 import com.braintribe.utils.StringTools;
 import com.braintribe.utils.collection.impl.AttributeContexts;
-import com.braintribe.utils.lcd.LazyInitialized;
+import com.braintribe.utils.lcd.Lazy;
 import com.braintribe.utils.paths.UniversalPath;
 import com.braintribe.utils.xml.parser.DomParser;
 import com.braintribe.utils.xml.parser.DomParserException;
@@ -173,11 +167,10 @@ public class ArtifactManagementProcessor extends AbstractDispatchingServiceProce
 		private DownloadArtifacts request;
 		private TransitiveResolverContract contract;
 		private List<CompiledDependencyIdentification> terminals;
-		private int partCount;
 		private ServiceRequestContext context;
 		private AnalysisArtifactResolution resolution;
 		private File targetPath;
-		private LazyInitialized<Reason> processError = new LazyInitialized<>(this::generateUmbrellaReason);
+		private Lazy<Reason> processError = new Lazy<>(this::generateUmbrellaReason);
 		private boolean dynamicOutput;
 		
 		public StatefulDownloadArtifacts(ServiceRequestContext context, DownloadArtifacts request, boolean dynamicOutput) {
@@ -280,7 +273,7 @@ public class ArtifactManagementProcessor extends AbstractDispatchingServiceProce
 					if (error != null) {
 						failedPartCount++;
 						println(sequence(
-								brightRed("Download failed for artifact part " + (i + 1) + "/" + partCount + " "),
+								brightRed("Download failed for artifact part "),
 								artifactPartIdentification(artifact, part),
 								text(": "),
 								text(error.stringify(true))
@@ -288,7 +281,7 @@ public class ArtifactManagementProcessor extends AbstractDispatchingServiceProce
 					}
 					else {
 						println(sequence( //
-							brightGreen("Downloaded artifact part " + (i + 1) + "/" + partCount + " to: "), 
+							brightGreen("Downloaded artifact part to: "), 
 							text(targetFile.getAbsolutePath()
 						)));
 					}
@@ -329,7 +322,6 @@ public class ArtifactManagementProcessor extends AbstractDispatchingServiceProce
 
 			try (DownloadMonitor monitor = new DownloadMonitor(eventHub, false, 0, dynamicOutput)) {
 				monitor.addPhase(ConsoleOutputs.text("Resolving Dependencies"));
-				monitor.addPhase(ConsoleOutputs.text("Detecting Artifact Parts"));
 				monitor.addPhase(ConsoleOutputs.text("Resolving Artifact Parts"));
 
 				monitor.nextPhase();
@@ -362,64 +354,12 @@ public class ArtifactManagementProcessor extends AbstractDispatchingServiceProce
 					return resolution.getFailure();
 				}
 				
-				monitor.nextPhase(resolution.getSolutions().size());
-				
-				
-				// determine parts
-				PartAvailabilityReflection partAvailabilityReflection = contract.dataResolverContract().partAvailabilityReflection();
-
-				Map<AnalysisArtifact, List<PartEnrichment>> enrichments = new ConcurrentHashMap<>();
-				
-				AtomicInteger partCount = new AtomicInteger();
-				
-				Predicate<String> partInclusionFilter = partInclusionFilter(request.getParts());
-				
-				resolution.getSolutions().parallelStream().forEach(a -> {
-					var partReflectionsMaybe = partAvailabilityReflection.getAvailablePartsOfReasoned(CompiledArtifactIdentification.from(a));
-					
-					if (partReflectionsMaybe.isUnsatisfied()) {
-						// TODO: what to do here really? 
-						return;
-					}
-					
-					var partReflections = partReflectionsMaybe.get();
-					
-					Map<String, PartEnrichment> parts = new HashMap<>();
-					
-					for (PartReflection reflection: partReflections) {
-						String partType = reflection.getType();
-						
-						if (HashPartFilter.INSTANCE.test(partType)) {
-							continue;
-						}
-						
-						if (!partInclusionFilter.test(PartIdentification.asString(reflection))) {
-							continue;
-						}
-						
-						PartEnrichment enrichment = PartEnrichment.T.create();
-						enrichment.setClassifier(reflection.getClassifier());
-						enrichment.setType(partType);
-						enrichment.setMandatory(true);
-						
-						parts.put(PartIdentification.asString(enrichment), enrichment);
-					}
-					
-					partCount.getAndUpdate(i -> i + parts.size());
-					enrichments.put(a, new ArrayList<>(parts.values()));
-					
-					monitor.increasePhaseItems(1);
-				});
-				
-				this.partCount = partCount.get();
-				
-				monitor.nextPhase(this.partCount);
+				// part download phase
+				monitor.nextPhase();
 				
 				// download parts
 				PartEnrichingContext enrichingContext = PartEnrichingContext.build() //
-				.enrichingExpert(a -> {
-					return enrichments.getOrDefault(a, Collections.emptyList());
-				}).done(); 
+				.enrichingExpert(getEnrichmentExpert()).done(); 
 				
 				EntityEventListener<OnPartDownloadProcessed> listener = (c,e) -> monitor.increasePhaseItems(1); 
 				
@@ -447,6 +387,76 @@ public class ArtifactManagementProcessor extends AbstractDispatchingServiceProce
 			artifactTreePrinter.printDependencyTree(resolution);
 			
 			return null;
+		}
+		
+		private Function<AnalysisArtifact, List<PartEnrichment>> getEnrichmentExpert() {
+			if (request.getParts().isEmpty() && request.getMandatoryParts().isEmpty())
+				return getReflectedPartsEnrichmentExpert();
+
+			return getExplicitEnrichmentExpert();
+		}
+		
+		private Function<AnalysisArtifact, List<PartEnrichment>> getExplicitEnrichmentExpert() {
+			List<PartEnrichment> enrichments = new ArrayList<>();
+			
+			for (String part: request.getParts())
+				enrichments.add(parsePartEnrichment(part, false));
+			
+			for (String mandatoryPart: request.getMandatoryParts())
+				enrichments.add(parsePartEnrichment(mandatoryPart, true));
+			
+			return a -> enrichments;
+		}
+		
+		private PartEnrichment parsePartEnrichment(String part, boolean mandatory) {
+			PartIdentification partIdent = PartIdentification.parse(part);
+			PartEnrichment pe = PartEnrichment.T.create();
+			pe.setClassifier(partIdent.getClassifier());
+			pe.setType(partIdent.getType());
+			pe.setMandatory(mandatory);
+			return pe;
+		}
+		
+		private Function<AnalysisArtifact, List<PartEnrichment>> getReflectedPartsEnrichmentExpert() {
+			PartAvailabilityReflection partAvailabilityReflection = contract.dataResolverContract().partAvailabilityReflection();
+			return a -> {
+				var partReflectionsMaybe = partAvailabilityReflection.getAvailablePartsOfReasoned(CompiledArtifactIdentification.from(a));
+				
+				if (partReflectionsMaybe.isUnsatisfied()) {
+					
+					println(sequence(
+							brightRed("Part reflection failed for artifact "),
+							artifactIdentification(a),
+							text(": "),
+							text(partReflectionsMaybe.whyUnsatisfied().stringify(true))
+					));
+					
+					PartEnrichment pom = PartEnrichment.T.create();
+					pom.setType("pom");
+					pom.setMandatory(true);
+					return Collections.singletonList(pom);
+				}
+				
+				var partReflections = partReflectionsMaybe.get();
+				
+				List<PartEnrichment> enrichments = new ArrayList<>(partReflections.size());
+				
+				for (PartReflection reflection: partReflections) {
+					String partType = reflection.getType();
+					
+					if (HashPartFilter.INSTANCE.test(partType)) {
+						continue;
+					}
+					
+					PartEnrichment enrichment = PartEnrichment.T.create();
+					enrichment.setClassifier(reflection.getClassifier());
+					enrichment.setType(partType);
+					enrichment.setMandatory(true);
+					enrichments.add(enrichment);
+				}
+				
+				return enrichments;
+			};
 		}
 	}
 	
